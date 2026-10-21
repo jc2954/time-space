@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Journey Style Particle Cloud</title>
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #030712;
+            width: 100%;
+            height: 100%;
+        }
+
+        canvas.webgl {
+            position: fixed;
+            top: 0;
+            left: 0;
+            outline: none;
+        }
+    </style>
+    <!-- Import Three.js and OrbitControls via CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+
+<body>
+
+    <canvas class="webgl"></canvas>
+
+    <script>
+        // --- 1. Basic Three.js Setup ---
+        const canvas = document.querySelector('canvas.webgl');
+        const scene = new THREE.Scene();
+
+        // Window Sizes
+        const sizes = {
+            width: window.innerWidth,
+            height: window.innerHeight
+        };
+
+        window.addEventListener('resize', () => {
+            sizes.width = window.innerWidth;
+            sizes.height = window.innerHeight;
+
+            camera.aspect = sizes.width / sizes.height;
+            camera.updateProjectionMatrix();
+
+            renderer.setSize(sizes.width, sizes.height);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+            // Dynamic scale adjustment for particles when window scales
+            if (typeof material !== 'undefined' && material.uniforms) {
+                material.uniforms.uSize.value = 35.0 * renderer.getPixelRatio();
+            }
+        });
+
+        // Camera
+        const camera = new THREE.PerspectiveCamera(75, sizes.width / sizes.height, 0.1, 100);
+        camera.position.set(0, 3, 8);
+        camera.lookAt(0, 0, 0);
+        scene.add(camera);
+
+        // Controls
+        const controls = new THREE.OrbitControls(camera, canvas);
+        controls.enableDamping = true;
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({
+            canvas: canvas,
+            antialias: true
+        });
+        renderer.setSize(sizes.width, sizes.height);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        // --- 2. Geometry & Custom Attributes (Embedding Space Initialization) ---
+        const count = 60000; // Particle density count
+        const geometry = new THREE.BufferGeometry();
+
+        const positions = new Float32Array(count * 3);
+        const randomness = new Float32Array(count * 3);
+
+        for (let i = 0; i < count; i++) {
+            const i3 = i * 3;
+
+            // Base position layout: A long flat, elliptical atmospheric blanket
+            positions[i3 + 0] = (Math.random() - 0.5) * 12; // Width (X)
+            positions[i3 + 1] = (Math.random() - 0.5) * 1.5; // Thickness/Height (Y)
+            positions[i3 + 2] = (Math.random() - 0.5) * 12; // Depth (Z)
+
+            // Individual displacement variance multipliers to break structure uniformity
+            randomness[i3 + 0] = (Math.random() - 0.5) * 3;
+            randomness[i3 + 1] = (Math.random() - 0.5) * 2;
+            randomness[i3 + 2] = (Math.random() - 0.5) * 3;
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('aRandomness', new THREE.BufferAttribute(randomness, 3));
+
+        // --- 3. Custom Shaders Layout ---
+        const vertexShaderCode = `
+            uniform float uTime;
+            uniform float uSize;
+            attribute vec3 aRandomness;
+            varying vec3 vPosition;
+
+            void main() {
+                vec3 modelPosition = position;
+
+                // EMBEDDING TIME & SPACE IN FLOW:
+                // Organic trigonometric waves shifting position over space coordinates
+                modelPosition.x += sin(uTime * 0.4 + modelPosition.z * 0.3) * 0.8;
+                modelPosition.z += cos(uTime * 0.3 + modelPosition.x * 0.4) * 0.8;
+                
+                // Slowly scale turbulence boundaries dynamically over the time vector
+                float waveFactor = sin(uTime * 0.5 + modelPosition.x) * 0.5 + 0.5;
+                modelPosition += aRandomness * waveFactor;
+
+                // Matrix Transformations
+                vec4 viewPosition = viewMatrix * modelMatrix * vec4(modelPosition, 1.0);
+                gl_Position = projectionMatrix * viewPosition;
+
+                // Three.js Journey Style Size Attenuation (Closer look bigger)
+                gl_PointSize = uSize;
+                gl_PointSize *= (1.0 / -viewPosition.z);
+
+                // Pass to Fragment Shader
+                vPosition = modelPosition;
+            }
+        `;
+
+        const fragmentShaderCode = `
+            varying vec3 vPosition;
+
+            void main() {
+                // Soft Circle Brush Formula: ensure falloff smoothly reaches 0 at edge
+                float strength = distance(gl_PointCoord, vec2(0.5));
+                strength = 1.0 - (strength * 2.0);
+                strength = clamp(strength, 0.0, 1.0);
+                strength = pow(strength, 3.0); // Smooth falloff profile
+
+                // Dynamic Space Coloring: Color gradients maps to spatial distance from core
+                float distanceToCenter = length(vPosition.xz);
+                vec3 colorCore = vec3(0.5, 0.75, 1.0); // Glowing Soft Blue
+                vec3 colorEdge = vec3(0.3, 0.1, 0.5); // Deep Purple
+                
+                // Mix colors based on position layout
+                vec3 mixedColor = mix(colorCore, colorEdge, clamp(distanceToCenter / 6.0, 0.0, 1.0));
+
+                gl_FragColor = vec4(mixedColor, strength * 0.4);
+            }
+        `;
+
+        // Material Construct
+        const material = new THREE.ShaderMaterial({
+            vertexShader: vertexShaderCode,
+            fragmentShader: fragmentShaderCode,
+            transparent: true,
+            depthWrite: false, // Prevents bounding box occlusion artifacts
+            blending: THREE.AdditiveBlending, // Forces overlapping particles to blend/glow
+            uniforms: {
+                uTime: { value: 0 },
+                uSize: { value: 35.0 * renderer.getPixelRatio() }
+            }
+        });
+
+        // Mesh Point Array
+        const points = new THREE.Points(geometry, material);
+        scene.add(points);
+
+        // --- 4. Main Engine Animation Clock Loop ---
+        const clock = new THREE.Clock();
+
+        const tick = () => {
+            const elapsedTime = clock.getElapsedTime();
+
+            // Update interactive controls
+            controls.update();
+
+            // Pass elapsed clock value to shader
+            material.uniforms.uTime.value = elapsedTime;
+
+            // Slowly spin the entire cloud scene for added depth rotation
+            points.rotation.y = elapsedTime * 0.02;
+
+            // Render
+            renderer.render(scene, camera);
+
+            // Recall
+            window.requestAnimationFrame(tick);
+        };
+
+        tick();
+    </script>
+</body>
+
+</html>
